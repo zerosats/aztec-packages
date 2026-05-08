@@ -12,6 +12,6 @@ add_subdirectory(ecdsa)
 add_subdirectory(aes128)
 add_subdirectory(poseidon2)
 
-if (NOT WASM)
+if (NOT WASM AND NOT BB_LITE)
     add_subdirectory(merkle_tree)
 endif()

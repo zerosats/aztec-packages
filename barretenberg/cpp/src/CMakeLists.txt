@@ -115,7 +115,7 @@ add_subdirectory(barretenberg/ultra_honk)
 add_subdirectory(barretenberg/vm2_stub)
 add_subdirectory(barretenberg/wasi)
 
-if(NOT FUZZING AND NOT WASM)
+if(NOT FUZZING AND NOT WASM AND NOT BB_LITE)
     add_subdirectory(barretenberg/ipc)
     add_subdirectory(barretenberg/lmdblib)
     add_subdirectory(barretenberg/nodejs_module)
@@ -190,7 +190,7 @@ set(BARRETENBERG_TARGET_OBJECTS
     $<TARGET_OBJECTS:translator_vm_objects>
     $<TARGET_OBJECTS:ultra_honk_objects>)
 
-if(NOT WASM AND NOT FUZZING)
+if(NOT WASM AND NOT FUZZING AND NOT BB_LITE)
     # enable merkle trees and lmdb
     list(APPEND BARRETENBERG_TARGET_OBJECTS $<TARGET_OBJECTS:crypto_merkle_tree_objects>)
     list(APPEND BARRETENBERG_TARGET_OBJECTS $<TARGET_OBJECTS:lmdblib_objects>)

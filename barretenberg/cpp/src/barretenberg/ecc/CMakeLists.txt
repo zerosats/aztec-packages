@@ -1,4 +1,25 @@
-barretenberg_module(ecc numeric crypto_keccak crypto_sha256)
+# Auto-discover source files
+file(GLOB_RECURSE SOURCE_FILES *.cpp)
+file(GLOB_RECURSE HEADER_FILES *.hpp *.tcc)
+file(GLOB_RECURSE TEST_SOURCE_FILES *.test.cpp)
+file(GLOB_RECURSE BENCH_SOURCE_FILES *.bench.cpp)
+file(GLOB_RECURSE FUZZERS_SOURCE_FILES *.fuzzer.cpp)
+list(FILTER SOURCE_FILES EXCLUDE REGEX ".*\\.(fuzzer|test|bench)\\.cpp$")
+
+# Conditionally exclude assembly-dependent benchmarks when ASM is disabled
+if(DISABLE_ASM)
+    list(FILTER BENCH_SOURCE_FILES EXCLUDE REGEX ".*/fr_straight\\.bench\\.cpp$")
+endif()
+
+barretenberg_module_with_sources(
+    ecc
+    SOURCE_FILES ${SOURCE_FILES}
+    HEADER_FILES ${HEADER_FILES}
+    TEST_SOURCE_FILES ${TEST_SOURCE_FILES}
+    BENCH_SOURCE_FILES ${BENCH_SOURCE_FILES}
+    FUZZERS_SOURCE_FILES ${FUZZERS_SOURCE_FILES}
+    DEPENDENCIES numeric crypto_keccak crypto_sha256
+)
 
 if(DISABLE_ADX)
     message(STATUS "Disabling ADX assembly variant.")
