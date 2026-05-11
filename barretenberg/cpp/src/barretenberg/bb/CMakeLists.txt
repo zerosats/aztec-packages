@@ -79,3 +79,7 @@ if (NOT(FUZZING))
         endif()
     endif()
 endif()
+
+# Create external API alias for mobile builds
+# This target provides the external C API for mobile platforms
+add_custom_target(bb-external DEPENDS bbapi)
