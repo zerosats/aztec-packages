@@ -1,25 +1,19 @@
 name: Publish Barretenberg Mac
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
-    # Allow pushing a manual nightly release
+    # Manual trigger for building binary artifacts
     inputs:
       ref_name:
         description: The ref name to build as. Useful for hotfixing a release.
         required: false
       tag:
-        description: The tag to build from (leave empty to build a nightly release from master)
+        description: The tag to build from (leave empty to build from current branch)
         required: false
       publish:
         description: Whether to publish the build artifacts
         type: boolean
         default: false
-  # schedule:
-  #   # Run a nightly release at 2 AM UTC
-  #   - cron: "0 2 * * *"
 
 permissions:
   # Necessary to upload new release artifacts
