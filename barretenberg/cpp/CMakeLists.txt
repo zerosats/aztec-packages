@@ -158,7 +158,6 @@ include(cmake/httplib.cmake)
 include(cmake/libdeflate.cmake)
 
 if (NOT WASM AND NOT BB_LITE)
-#if (NOT WASM) 
    include(cmake/lmdb.cmake)
 endif()
 

@@ -4,65 +4,74 @@ use std::fs::create_dir_all;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Fix duplicate type definitions in the generated bindings file
-/// It's known bug with bindgen that generates duplicate type definitions
-/// if they are defined in multiple templates.
-/// It's easier to just post-process the bindings file to remove the duplicate type definitions,
-/// rather than trying to patch for it in the C++ code.
+/// Fix duplicate type definitions in the generated bindings file.
+///
+/// LOCAL PATCH: bindgen generates duplicate `pub type` aliases when the same
+/// typedef appears in multiple C++ template instantiations. The original
+/// implementation delegated to a Python/shell script that split on newlines,
+/// which failed when bindgen emits all defs on a single line (common with
+/// NDK/clang on Linux CI). This pure-Rust version scans for
+/// `pub type <name> = ...;` tokens directly, regardless of line layout.
 fn fix_duplicate_bindings(bindings_file: &PathBuf) {
-    println!("cargo:warning=Fixing duplicate type definitions in bindings...");
+    use std::collections::HashSet;
 
-    let scripts_dir = PathBuf::from("scripts");
-    let python_script = scripts_dir.join("fix_bindings.py");
-    let shell_script = scripts_dir.join("fix_bindings.sh");
+    let content = match std::fs::read_to_string(bindings_file) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("cargo:warning=fix_duplicate_bindings: cannot read {}: {}", bindings_file.display(), e);
+            return;
+        }
+    };
 
-    // Try Python script first
-    if python_script.exists() {
-        let output = Command::new("python3")
-            .arg(&python_script)
-            .arg(bindings_file)
-            .output();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0usize;
+    let bytes = content.as_bytes();
+    let needle = b"pub type ";
 
-        match output {
-            Ok(result) => {
-                if result.status.success() {
-                    println!("cargo:warning=Successfully fixed bindings with Python script");
-                    return;
-                } else {
-                    println!("cargo:warning=Python script failed, trying shell script...");
-                }
+    while cursor < content.len() {
+        // Find next "pub type " occurrence
+        let rel = content[cursor..].find("pub type ");
+        let pos = match rel {
+            Some(r) => cursor + r,
+            None => {
+                result.push_str(&content[cursor..]);
+                break;
             }
-            Err(_) => {
-                println!("cargo:warning=Python not available, trying shell script...");
+        };
+
+        // Flush everything before this token
+        result.push_str(&content[cursor..pos]);
+
+        // Find the semicolon that ends the type definition
+        let after = &content[pos..];
+        match after.find(';') {
+            Some(semi) => {
+                let type_def = &after[..=semi];
+                // Extract the identifier after "pub type "
+                let name_start = needle.len();
+                let name_len = after[name_start..]
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(0);
+                let type_name = &after[name_start..name_start + name_len];
+
+                if type_name.is_empty() || seen.insert(type_name.to_string()) {
+                    result.push_str(type_def);
+                } else {
+                    println!("cargo:warning=fix_duplicate_bindings: removed duplicate `{}`", type_name);
+                }
+                cursor = pos + semi + 1;
+            }
+            None => {
+                // No semicolon — keep the rest verbatim
+                result.push_str(after);
+                break;
             }
         }
     }
 
-    // Fallback to shell script
-    if shell_script.exists() {
-        let output = Command::new("bash")
-            .arg(&shell_script)
-            .arg(bindings_file)
-            .output();
-
-        match output {
-            Ok(result) => {
-                if result.status.success() {
-                    println!("cargo:warning=Successfully fixed bindings with shell script");
-                } else {
-                    println!("cargo:warning=Shell script failed");
-                    eprintln!(
-                        "Shell script stderr: {}",
-                        String::from_utf8_lossy(&result.stderr)
-                    );
-                }
-            }
-            Err(e) => {
-                println!("cargo:warning=Failed to run shell script: {}", e);
-            }
-        }
-    } else {
-        println!("cargo:warning=No fix scripts found, skipping duplicate removal");
+    if let Err(e) = std::fs::write(bindings_file, &result) {
+        println!("cargo:warning=fix_duplicate_bindings: cannot write {}: {}", bindings_file.display(), e);
     }
 }
 
@@ -84,18 +93,18 @@ fn main() {
     let cache_base = if target_os == "windows" {
         let local_app_data = env::var("LOCALAPPDATA").expect("LOCALAPPDATA not set");
         PathBuf::from(local_app_data)
-            .join("barretenberg-v3.0.0-manual.20251030-fix2")
+            .join("barretenberg-v3.0.0-manual.20251030")
             .join("cache")
     } else if target_os == "macos" || target_os == "ios" {
         PathBuf::from(home.expect("HOME not set"))
             .join(".cargo")
             .join("polybase")
-            .join("barretenberg-v3.0.0-manual.20251030-fix2")
+            .join("barretenberg-v3.0.0-manual.20251030")
     } else {
         PathBuf::from(home.expect("HOME not set"))
             .join(".cargo")
             .join("polybase")
-            .join("barretenberg-v3.0.0-manual.20251030-fix2")
+            .join("barretenberg-v3.0.0-manual.20251030")
     };
     let cache_dir = cache_base.join(&target);
 
@@ -120,18 +129,11 @@ fn main() {
         // Build the C++ code using CMake and get the build directory path.
         // iOS
         if target_os == "ios" {
-            let ios_platform = match target.as_str() {
-                "aarch64-apple-ios" => "OS64",
-                "aarch64-apple-ios-sim" => "SIMULATORARM64",
-                "x86_64-apple-ios" => "SIMULATOR64",
-                _ => panic!("Unsupported iOS target: {}", target),
-            };
-
             dst = Config::new(cpp_dir)
                 .generator("Ninja")
                 .define("BB_RS", "ON")
                 .configure_arg("-DCMAKE_BUILD_TYPE=Release")
-                .configure_arg(format!("-DPLATFORM={ios_platform}"))
+                .configure_arg("-DPLATFORM=OS64")
                 .configure_arg("-DDEPLOYMENT_TARGET=15.0")
                 .configure_arg(format!("--toolchain={}", ios_toolchain.display()))
                 .configure_arg("-DTRACY_ENABLE=OFF")
@@ -223,42 +225,79 @@ fn main() {
         let ndk_version = option_env!("NDK_VERSION").expect("NDK_VERSION not set");
         let host_tag = option_env!("HOST_TAG").expect("HOST_TAG not set");
 
-        builder = builder
-        // Add the include path for headers.
-        .clang_args([
-            "-std=c++20",
-            "-xc++",
-            &format!("-I{}/build/include", dst.display()),
-            // Dependencies' include paths needs to be added manually.
-            &format!("-I{}/build/_deps/msgpack-c/src/msgpack-c/include", dst.display()),
-            //&format!("-I{}/build/_deps/libdeflate-src", dst.display()),
-            &format!("-I{}/ndk/{}/toolchains/llvm/prebuilt/{}/sysroot/usr/include/c++/v1", android_home, ndk_version, host_tag),
-            &format!("-I{}/ndk/{}/toolchains/llvm/prebuilt/{}/sysroot/usr/include", android_home, ndk_version, host_tag),
-            &format!("-I{}/ndk/{}/toolchains/llvm/prebuilt/{}/sysroot/usr/include/aarch64-linux-android", android_home, ndk_version, host_tag)
-        ]);
-    } else if target_os == "ios" {
-        let ios_sdk = if target == "aarch64-apple-ios" {
-            "iPhoneOS"
-        } else {
-            "iPhoneSimulator"
-        };
-        let ios_sdk_path = format!(
-            "/Applications/Xcode.app/Contents/Developer/Platforms/{ios_sdk}.platform/Developer/SDKs/{ios_sdk}.sdk"
+        // LOCAL PATCH (PATCHES.md): force clang's frontend to behave like a
+        // cross-compiler for the requested Android target at API 33. Without
+        // --target / --sysroot the bindgen pass parses libc++ headers as if
+        // for the host x86_64, and Android-API-gated symbols (e.g.
+        // pthread_cond_clockwait, gated behind __ANDROID_API__ >= 30) appear
+        // unguarded → "undeclared identifier" errors. Hard-coding android-33
+        // matches the -DANDROID_PLATFORM=android-33 used by the cmake step.
+        //
+        // Per-target bits: clang's `--target` takes the Rust TARGET triple
+        // verbatim (with the API level appended). NDK sysroot's per-target
+        // include subdir tracks the TARGET triple too, except for
+        // armv7-linux-androideabi which lives under `arm-linux-androideabi`.
+        let sysroot = format!(
+            "{}/ndk/{}/toolchains/llvm/prebuilt/{}/sysroot",
+            android_home, ndk_version, host_tag
         );
-        let ios_cpp_include = format!("-I{ios_sdk_path}/usr/include/c++/v1");
-        let ios_include = format!("-I{ios_sdk_path}/usr/include");
+
+        let target_include_subdir = match target.as_str() {
+            "armv7-linux-androideabi" => "arm-linux-androideabi",
+            other => other,
+        };
+        let clang_target = format!("--target={}33", target);
 
         builder = builder
         // Add the include path for headers.
         .clang_args([
             "-std=c++20",
             "-xc++",
+            &clang_target,
+            &format!("--sysroot={}", sysroot),
+            "-D__ANDROID_API__=33",
             &format!("-I{}/build/include", dst.display()),
             // Dependencies' include paths needs to be added manually.
             &format!("-I{}/build/_deps/msgpack-c/src/msgpack-c/include", dst.display()),
             //&format!("-I{}/build/_deps/libdeflate-src", dst.display()),
-            &ios_cpp_include,
-            &ios_include
+            &format!("-I{}/usr/include/c++/v1", sysroot),
+            &format!("-I{}/usr/include", sysroot),
+            &format!("-I{}/usr/include/{}", sysroot, target_include_subdir),
+        ]);
+    } else if target_os == "ios" {
+        // LOCAL PATCH: Xcode 26 clang rejects the Rust triple "arm64-apple-ios-sim"
+        // (bindgen 0.71+ auto-forwards TARGET env var to clang). Pass an explicit,
+        // version-qualified clang triple and the correct SDK path for each slice.
+        // SDKROOT is set by cargo for cross-compilation based on the Rust target.
+        let is_sim = target.contains("sim") || target.starts_with("x86_64-apple-ios");
+        let clang_triple = if is_sim {
+            if target.starts_with("aarch64") {
+                "arm64-apple-ios13.0-simulator"
+            } else {
+                "x86_64-apple-ios13.0-simulator"
+            }
+        } else {
+            "arm64-apple-ios13.0"
+        };
+        let sdkroot = env::var("SDKROOT").unwrap_or_else(|_| {
+            if is_sim {
+                "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk".to_string()
+            } else {
+                "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk".to_string()
+            }
+        });
+        builder = builder
+        // Add the include path for headers.
+        .clang_args([
+            "-std=c++20",
+            "-xc++",
+            &format!("--target={}", clang_triple),
+            &format!("-I{}/build/include", dst.display()),
+            // Dependencies' include paths needs to be added manually.
+            &format!("-I{}/build/_deps/msgpack-c/src/msgpack-c/include", dst.display()),
+            //&format!("-I{}/build/_deps/libdeflate-src", dst.display()),
+            &format!("-I{}/usr/include/c++/v1", sdkroot),
+            &format!("-I{}/usr/include", sdkroot),
         ]);
     } else if target_os == "macos" {
         builder = builder
